@@ -1,0 +1,1 @@
+"""PathSnap frontend package."""
