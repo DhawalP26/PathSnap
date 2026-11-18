@@ -62,6 +62,46 @@ class RoadGraph:
 
         return cls(nodes, arcs)
 
+    @classmethod
+    def from_trip(cls, trip: object) -> RoadGraph:
+        """Build a directed graph from Member 1's loaded Trip arrays."""
+        try:
+            raw_nodes = trip.nodes
+            raw_arcs = trip.arcs
+        except AttributeError as exc:
+            raise TypeError("trip must provide nodes and arcs arrays") from exc
+
+        nodes: list[tuple[float, float]] = []
+        for node_id, row in enumerate(raw_nodes):
+            if len(row) != 2:
+                raise ValueError(f"Node row {node_id} must have longitude and latitude")
+            longitude, latitude = _parse_floats(row, "trip.nodes", node_id + 1)
+            if not (-180 <= longitude <= 180 and -90 <= latitude <= 90):
+                raise ValueError(f"trip.nodes:{node_id + 1}: coordinates are out of range")
+            nodes.append((longitude, latitude))
+        if not nodes:
+            raise ValueError("trip.nodes: no nodes found")
+
+        arcs: list[Arc] = []
+        for arc_id, row in enumerate(raw_arcs):
+            if len(row) != 2:
+                raise ValueError(f"Arc row {arc_id} must have from_node and to_node")
+            try:
+                from_node, to_node = (int(value) for value in row)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"Arc row {arc_id} node IDs must be integers") from exc
+            if not (0 <= from_node < len(nodes) and 0 <= to_node < len(nodes)):
+                raise ValueError(f"Arc row {arc_id} references a node outside the table")
+            arcs.append(
+                Arc(
+                    arc_id,
+                    from_node,
+                    to_node,
+                    _haversine_m(nodes[from_node], nodes[to_node]),
+                )
+            )
+        return cls(nodes, arcs)
+
     def outgoing_arcs(self, node_id: int) -> tuple[Arc, ...]:
         self._validate_node(node_id)
         return tuple(self._outgoing[node_id])

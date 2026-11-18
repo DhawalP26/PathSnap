@@ -1,7 +1,10 @@
 import math
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
+
+import pandas as pd
 
 from reconstruction.road_graph import RoadGraph
 from reconstruction.hmm import candidate_scores_to_emissions
@@ -19,7 +22,10 @@ from reconstruction.transition import (
     expand_candidate_sequence,
     route_between_positions,
 )
-from reconstruction.route_reconstruction import reconstruct_route
+from reconstruction.route_reconstruction import (
+    reconstruct_prepared_trip,
+    reconstruct_route,
+)
 from reconstruction.viterbi import decode, decode_with_restarts
 
 
@@ -259,6 +265,96 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(result.segment_ranges, ((0, 2), (2, 3)))
         self.assertEqual(result.route_segments, ((0, 1), (4,)))
         self.assertEqual(result.route_arc_ids, (0, 1, 4))
+
+    def test_prepared_trip_integration_calls_scorer_and_returns_geo_lines(self) -> None:
+        prepared = SimpleNamespace(
+            trip=SimpleNamespace(
+                trip_id="00000001",
+                nodes=self.graph.nodes,
+                arcs=[(arc.from_node, arc.to_node) for arc in self.graph.arcs],
+                track=[(0.0005, 0.0, 1.0), (0.0015, 0.0, 3.0)],
+            ),
+            network=object(),
+            features=pd.DataFrame(
+                [
+                    self.candidate(0, 0, 0.5),
+                    self.candidate(0, 2, 0.5),
+                    self.candidate(1, 1, 0.5),
+                    self.candidate(1, 3, 0.5),
+                ]
+            ),
+        )
+        artifact = object()
+        scorer_calls = []
+
+        def score_prepared_trip(prepared_trip, artifact):
+            scorer_calls.append((prepared_trip, artifact))
+            return prepared_trip.features.assign(
+                score=[
+                    0.9 if arc_id in (0, 1) else 0.1
+                    for arc_id in prepared_trip.features["arc_id"]
+                ]
+            )
+
+        result = reconstruct_prepared_trip(
+            prepared, score_prepared_trip, artifact=artifact
+        )
+        self.assertEqual(scorer_calls, [(prepared, artifact)])
+        self.assertEqual(result.trip_id, "00000001")
+        self.assertIsNotNone(result.reconstruction)
+        assert result.reconstruction is not None
+        self.assertEqual(result.reconstruction.predicted_arc_ids, (0, 1))
+        self.assertEqual(
+            result.route_lines,
+            (((0.0, 0.0), (0.001, 0.0), (0.002, 0.0)),),
+        )
+        response = result.api_response()
+        self.assertEqual(response["trip_id"], "00000001")
+        self.assertEqual(response["predicted_arc_ids"], [0, 1])
+        self.assertEqual(
+            response["route_coordinates"],
+            [[[0.0, 0.0], [0.0, 0.001], [0.0, 0.002]]],
+        )
+        self.assertEqual(response["route_breaks"], 0)
+
+    def test_prepared_trip_integration_handles_zero_scores_and_no_candidates(self) -> None:
+        prepared = SimpleNamespace(
+            trip=SimpleNamespace(
+                trip_id="00000002",
+                nodes=self.graph.nodes,
+                arcs=[(arc.from_node, arc.to_node) for arc in self.graph.arcs],
+                track=[(0.0005, 0.0, 1.0)],
+            ),
+            network=object(),
+            features=pd.DataFrame([self.candidate(0, 0, 0.5)]),
+        )
+
+        zero_scored = pd.DataFrame(
+            [{**self.candidate(0, 0, 0.5), "score": 0.0}]
+        )
+        result = reconstruct_prepared_trip(
+            prepared, lambda _trip, *, artifact: zero_scored
+        )
+        self.assertIsNotNone(result.reconstruction)
+        assert result.reconstruction is not None
+        self.assertEqual(result.reconstruction.predicted_arc_ids, (0,))
+
+        empty_result = reconstruct_prepared_trip(
+            prepared,
+            lambda _trip, *, artifact: pd.DataFrame(
+                columns=["gps_index", "arc_id", "score"]
+            ),
+        )
+        self.assertIsNone(empty_result.reconstruction)
+        self.assertEqual(
+            empty_result.api_response(),
+            {
+                "trip_id": "00000002",
+                "predicted_arc_ids": [],
+                "route_coordinates": [],
+                "route_breaks": 0,
+            },
+        )
 
 
 class RouteAnalysisTests(unittest.TestCase):
