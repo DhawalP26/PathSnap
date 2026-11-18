@@ -18,6 +18,14 @@ from models.train_models import make_models, metrics_for
 VARIANT = "review1_extended_lattice"
 COLUMNS = FEATURES + EXTENDED_VARIANTS[VARIANT]
 FAMILIES = ("HistGradientBoosting", "RandomForest", "LogisticRegression", "DecisionTree", "MLP")
+FOREST_PROBES = (
+    dict(bootstrap=True, n_estimators=120, max_depth=28, min_samples_split=4,
+         min_samples_leaf=5, max_features="sqrt", max_leaf_nodes=None,
+         class_weight="balanced_subsample", max_samples=.85),
+    dict(bootstrap=True, n_estimators=180, max_depth=None, min_samples_split=4,
+         min_samples_leaf=2, max_features="sqrt", max_leaf_nodes=None,
+         class_weight=None, max_samples=None),
+)
 
 
 def suggest(trial, name):
@@ -254,7 +262,12 @@ def main():
             trial.set_user_attr("result", result)
             return result["metrics"]["top1_accuracy"]
 
-        study.optimize(objective, n_trials=max(0, args.trials - sum(t.state in (optuna.trial.TrialState.COMPLETE,
+        def enqueue_probes(active_study, completed):
+            if name == "RandomForest" and completed.number == 0:
+                for params in FOREST_PROBES:
+                    active_study.enqueue_trial(params, skip_if_exists=True)
+
+        study.optimize(objective, callbacks=[enqueue_probes], n_trials=max(0, args.trials - sum(t.state in (optuna.trial.TrialState.COMPLETE,
                                              optuna.trial.TrialState.PRUNED) for t in study.trials)),
                        gc_after_trial=True)
         return
@@ -308,8 +321,14 @@ def main():
         candidate = json.loads(selection_file.read_text())
     else:
         floor = max(x["top1_accuracy"] for x in candidates if x["configuration"] == "untuned")
-        peak = max(x["top1_accuracy"] for x in candidates)
-        eligible = [x for x in candidates if x["top1_accuracy"] >= max(floor, peak - .0003)]
+        baseline_winner = max((x for x in candidates if x["configuration"] == "untuned"),
+                              key=lambda x: x["top1_accuracy"])
+        allowed = [x for x in candidates if x["configuration"] == "untuned"
+                   or (x["f1"] >= baseline_winner["f1"] - .005
+                       and x["mean_trip_top1"] >= baseline_winner["mean_trip_top1"] - .005
+                       and x["gap"] <= baseline_winner["gap"] + .01)]
+        peak = max(x["top1_accuracy"] for x in allowed)
+        eligible = [x for x in allowed if x["top1_accuracy"] >= max(floor, peak - .0003)]
         candidate = max(eligible, key=lambda x: (x["mean_trip_top1"], x["f1"], -x["gap"],
                                                   -x["fold_std"], x["top1_accuracy"]))
         write_json(selection_file, candidate)
@@ -338,6 +357,7 @@ def main():
                         or frozen_model["feature_columns"] != COLUMNS or frozen_model["variant"] != VARIANT):
                     raise ValueError("Frozen evaluation model does not match selection")
                 model, fit_seconds = frozen_model["model"], None
+                del frozen_model
             else:
                 started = time.perf_counter()
                 model = models(name, params).fit(frame[COLUMNS], frame.label)
@@ -358,6 +378,7 @@ def main():
                                                  coverage.loc[sorted(held_ids)].aligned.sum()),
                           per_trip=per_trip)
             write_json(args.out / "holdout_evaluation.json", report)
+        del model, artifact
     print("Final selection:", name, candidate["top1_accuracy"], flush=True)
 
 

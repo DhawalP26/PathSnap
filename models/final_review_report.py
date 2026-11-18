@@ -110,7 +110,7 @@ def main():
         "The 40-feature extension added temporal geometry and a forward/backward directed candidate lattice. "
         "This review freezes those features and searches estimator settings.", "",
         "## Optuna studies", "",
-        "Seeded TPE used three startup trials per family and median pruning based on pooled development fold results. "
+        "The study used seeded Optuna TPE with three startup trials and development-only median pruning. The final forest budget stopped after three completed trials. The forest run therefore covered startup only: one sampler draw and two queued probes. It did not reach a posterior-guided TPE trial. "
         "Estimators and imputers were fit inside each fold. HistGradientBoosting early stopping was disabled, so "
         "there is no internal validation split. RF explored depth, tree count, leaf size, split size, "
         "feature and row subsampling, leaf caps, class weighting and conditional bootstrap settings. "
@@ -129,21 +129,29 @@ def main():
     for family, row in counts.iterrows():
         lines.append(f"| {family} | {int(row.get('COMPLETE', 0))} | {int(row.get('PRUNED', 0))} | {int(row.get('FAIL', 0))} |")
     lines += [
-        "", "The full folds contain hundreds of thousands of rows and the forest trials take several minutes per fit. "
-        "The bounded trial budgets prioritize the leading families. The SQLite study is resumable before selection. "
-        "Three deliberate probes were queued during the initial run to compare stronger regularization and baseline-like settings. "
+        "", "The full folds contain hundreds of thousands of rows. The three-trial cap limits the strength of conclusions. "
+        "The bounded trial budgets prioritize the leading families. The SQLite study preserves the three completed forest trials for a later, separate extension. "
+        "Two forest probes compared stronger regularization with baseline-like settings. "
         "Trial duration, intermediate fold scores and configurations are in the CSV and study database.",
         "",
         "Within 0.03 percentage points of a family's best pooled top-1, macro trip top-1 breaks near ties, "
         "followed by F1 and pooled top-1. Final selection also considers fold variability and the trainâ€“validation gap, "
-        "with a floor at the best frozen untuned top-1. The holdout is outside the selection rule.",
+        "with a floor at the best frozen untuned top-1. A tuned configuration must stay within 0.005 of the baseline F1 and macro top-1, with a gap no more than one point larger. The holdout is outside the selection rule.",
         "", "### Development-selected hyperparameters by family", "",
     ]
     for family, result in best.items():
         lines.append(f"- **{family}**, trial {result['trial']}, "
                      + ", ".join(f"`{k}={v}`" for k, v in result["params"].items()))
     lines += [
-        "", "## Generalization", "",
+        "", "Selected estimator parameters",
+        "",
+        "```json",
+        json.dumps(final["estimator_parameters"], indent=2),
+        "```",
+        "",
+        "## Generalization", "",
+        f"Best tuned forest conditional top-1 was {tuned.loc['RandomForest', 'top1_accuracy']:.4%}, "
+        f"with F1 {tuned.loc['RandomForest', 'f1']:.4f} and mean fold gap {tuned.loc['RandomForest', 'gap']*100:.2f} points.",
         f"The selected mean fold trainâ€“validation gap was **{100*selected['gap']:.2f} percentage points**. "
         "The frozen Random Forest gap was approximately 9.69 points and the frozen boosting gap was 3.65 points. "
         f"Positive candidates represented {generalization['positive_candidate_fraction']:.2%} of development rows. "
@@ -192,7 +200,7 @@ def main():
         "only after confirming that the previous worker stopped. Resume before freezing final selection.",
         "",
         "```text",
-        "python -m models.final_review_tuning --train <training CSV> --frozen <extended Review 1 results> --family RandomForest --trials 10 --jobs 8",
+        "python -m models.final_review_tuning --train <training CSV> --frozen <extended Review 1 results> --family RandomForest --trials 3 --jobs 8",
         "python -m models.final_review_tuning --train <training CSV> --frozen <extended Review 1 results> --finalize --jobs 8",
         "python -m models.final_review_tuning --train <training CSV> --frozen <extended Review 1 results> --diagnostics",
         "python -m models.final_review_smoke --model results/member2/final_review/final_model.pkl --out results/member2/final_review/student_smoke.json",
