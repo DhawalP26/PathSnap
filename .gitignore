@@ -5,3 +5,5 @@ __pycache__/
 models/*.pkl
 results/*.csv
 results/*.json
+results/member2/
+.pytest_cache/
