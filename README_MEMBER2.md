@@ -47,3 +47,7 @@ The validation run used 12 of 80 exported training trips and 161,467 candidate r
 | MLP | 0.9423 | 0.8531 | 0.7600 | 0.8038 | 0.2658 | 0.8409 |
 | DecisionTree | 0.9092 | 0.6530 | 0.8883 | 0.7527 | 0.6799 | 0.8101 |
 | LogisticRegression | 0.8694 | 0.5490 | 0.8996 | 0.6819 | 0.3088 | 0.8414 |
+
+## Review 1 feature experiments
+
+See [the Review 1 report](MEMBER2_REVIEW1_REPORT.md) for the fixed-model comparisons, feature schema, held-out validation, and reproduction command. The frozen candidate scorer is HistGradientBoosting with 26 features.
