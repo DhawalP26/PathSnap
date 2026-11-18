@@ -52,20 +52,15 @@ def main():
     })
     comparison["improvement_pp"] = (comparison.tuned_40_top1 - comparison.extended_40_top1) * 100
     comparison.to_csv(out / "before_after_tuning.csv")
-    ax = (comparison.iloc[:, :4] * 100).plot.bar(figsize=(10, 5), rot=14, ylim=(70, 94))
+    ax = (comparison.iloc[:, :4] * 100).plot.bar(figsize=(10, 5), rot=14, ylim=(0, 100))
     ax.set_ylabel("Development candidate top-1 (%)")
     ax.legend(["8 features", "26 features", "40 features", "40 features tuned"], loc="lower right")
     ax.figure.tight_layout()
     ax.figure.savefig(out / "review_comparison.png", dpi=140)
     plt.close(ax.figure)
-    curve = pd.read_csv(out / "learning_curve.csv").set_index("training_trips")
-    ax = (curve * 100).plot(marker="o")
-    ax.set(xlabel="Development training trips in fold 1", ylabel="Candidate top-1 (%)")
-    ax.figure.savefig(out / "learning_curve.png", dpi=140, bbox_inches="tight")
-    plt.close(ax.figure)
     matrices = out / "confusion_matrices"
     matrices.mkdir(exist_ok=True)
-    for name, row in [*tuned.iterrows(), ("selected_holdout", hold)]:
+    for name, row in [("selected_holdout", hold)]:
         display = ConfusionMatrixDisplay(np.array([[int(row["tn"]), int(row["fp"])],
                                                    [int(row["fn"]), int(row["tp"])]]))
         display.plot(colorbar=False).ax_.set_title(name)
@@ -109,7 +104,7 @@ def main():
                   f"{row.extended_40_top1:.4%} |")
         lines.append(prefix + (f" {row.tuned_40_top1:.4%} | {row.improvement_pp:+.4f} | "
                                 f"{row.tuned_40_f1:.4f} | {100*row.tuned_40_gap:.2f} |"
-                               if pd.notna(row.tuned_40_top1) else " Untuned | — | — | — |"))
+                               if pd.notna(row.tuned_40_top1) else " Untuned | â€” | â€” | â€” |"))
     lines += [
         "", "The 26-feature review introduced relative candidate geometry, heading and local network context. "
         "The 40-feature extension added temporal geometry and a forward/backward directed candidate lattice. "
@@ -120,7 +115,15 @@ def main():
         "there is no internal validation split. RF explored depth, tree count, leaf size, split size, "
         "feature and row subsampling, leaf caps, class weighting and conditional bootstrap settings. "
         "Boosting explored learning rate, iteration count, leaf count, depth, minimum leaf size, L2 and bins. "
-        "The other searches covered solver and penalty, tree pruning, and MLP size, learning rate and regularization.",
+        "An earlier auxiliary Logistic Regression study is preserved in the trial log. The final comparison retains the frozen baselines for boosting and the three auxiliary classifiers. Only forest trials enter tuning selection. The completed boosting study and interrupted Decision Tree and MLP jobs contributed no final model selection evidence.",
+        "",
+        "| Family | Search ranges |",
+        "|---|---|",
+        "| Random Forest | 80/120/180/250 trees, depth 14/20/28/unlimited, minimum split 4/12/24, "
+        "minimum leaf 2/5/10/20, feature subsampling sqrt/0.20/0.35, leaf cap 4096/8192/unlimited, "
+        "bootstrap on/off, class weight none/balanced/subsample when valid, bag fraction 0.65/0.85/full when bootstrapping |",
+        "| HistGradientBoosting | Learning rate 0.04–0.16, 120–300 iterations, 15/31/63 leaves, "
+        "depth 6/10/unlimited, 20–100 minimum leaf samples, L2 0.05–8, 127/255 bins |",
         "", "| Family | Completed | Pruned | Failed |", "|---|---:|---:|---:|",
     ]
     for family, row in counts.iterrows():
@@ -128,10 +131,11 @@ def main():
     lines += [
         "", "The full folds contain hundreds of thousands of rows and the forest trials take several minutes per fit. "
         "The bounded trial budgets prioritize the leading families. The SQLite study is resumable before selection. "
+        "Three deliberate probes were queued during the initial run to compare stronger regularization and baseline-like settings. "
         "Trial duration, intermediate fold scores and configurations are in the CSV and study database.",
         "",
         "Within 0.03 percentage points of a family's best pooled top-1, macro trip top-1 breaks near ties, "
-        "followed by F1 and pooled top-1. Final selection also considers fold variability and the train–validation gap, "
+        "followed by F1 and pooled top-1. Final selection also considers fold variability and the trainâ€“validation gap, "
         "with a floor at the best frozen untuned top-1. The holdout is outside the selection rule.",
         "", "### Development-selected hyperparameters by family", "",
     ]
@@ -140,15 +144,14 @@ def main():
                      + ", ".join(f"`{k}={v}`" for k, v in result["params"].items()))
     lines += [
         "", "## Generalization", "",
-        f"The selected mean fold train–validation gap was **{100*selected['gap']:.2f} percentage points**. "
+        f"The selected mean fold trainâ€“validation gap was **{100*selected['gap']:.2f} percentage points**. "
         "The frozen Random Forest gap was approximately 9.69 points and the frozen boosting gap was 3.65 points. "
         f"Positive candidates represented {generalization['positive_candidate_fraction']:.2%} of development rows. "
         f"The median candidate group contained {generalization['candidates_per_gps_quantiles'][2]:.0f} candidates. "
         "RF class weighting was varied while candidate generation and trip grouping were fixed.",
         "",
-        "Development learning curves, fold variation, hard trips, correlations and grouped feature permutation "
-        "diagnostics are included. Permuting a feature family breaks some cross-family relationships, so treat "
-        "the resulting drop as a sensitivity check. The error audit covers intersection, turn, parallel-road "
+        "Development fold variation, hard trips, correlations and grouped forest impurity importance "
+        "diagnostics are included. Correlated features can split impurity credit, and high-cardinality features can receive extra credit. Extra learning-curve refits were skipped for the final priority change. The error audit covers intersection, turn, parallel-road "
         "and near-tie proxies from the frozen benchmark.",
         "",
         f"The selected model's mean per-trip OOF top-1 was {selected['mean_trip_top1']:.4%}. "
@@ -169,7 +172,7 @@ def main():
         "",
         'artifact = load_final_model("results/member2/final_review/final_model.pkl")',
         "scored = score_review1(prepared_trip, artifact)",
-        '# Wire this into Member 4’s predict_trip(folder, trip_id) entry point.',
+        '# Wire this into Member 4â€™s predict_trip(folder, trip_id) entry point.',
         'predict_trip = create_predict_trip("results/member2/final_review/final_model.pkl")',
         "```",
         "",
@@ -181,7 +184,7 @@ def main():
         "", "## Pull request handoff", "",
         "PR #4 targets main. GitHub reports a merge conflict. Both branches appended ignore rules "
         "at the same place in .gitignore. When syncing main into member2-ml, keep both "
-        "`results/member1/` and `results/member2/` and one `.pytest_cache/` entry. Keep teammates’ "
+        "`results/member1/` and `results/member2/` and one `.pytest_cache/` entry. Keep teammatesâ€™ "
         "preprocessing changes from main. Run the tests after the branch merge.", "",
         "## Reproduction", "",
         "Use the package versions in `requirements_lock.txt`. Reuse the signed-off frozen inputs and original dataset paths. "
@@ -189,8 +192,8 @@ def main():
         "only after confirming that the previous worker stopped. Resume before freezing final selection.",
         "",
         "```text",
-        "python -m models.final_review_tuning --train <training CSV> --frozen <extended Review 1 results> --family HistGradientBoosting --trials 12",
-        "python -m models.final_review_tuning --train <training CSV> --frozen <extended Review 1 results> --finalize",
+        "python -m models.final_review_tuning --train <training CSV> --frozen <extended Review 1 results> --family RandomForest --trials 10 --jobs 8",
+        "python -m models.final_review_tuning --train <training CSV> --frozen <extended Review 1 results> --finalize --jobs 8",
         "python -m models.final_review_tuning --train <training CSV> --frozen <extended Review 1 results> --diagnostics",
         "python -m models.final_review_smoke --model results/member2/final_review/final_model.pkl --out results/member2/final_review/student_smoke.json",
         "```", "",
@@ -204,7 +207,7 @@ def main():
     (out / "MEMBER2_FINAL_REVIEW_REPORT.md").write_text(out_report, encoding="utf-8")
     Path("MEMBER2_FINAL_REVIEW_REPORT.md").write_text(out_report, encoding="utf-8")
     checksums = {p.relative_to(out).as_posix(): digest(p) for p in out.rglob("*")
-                 if p.is_file() and p.name != "checksums.json" and "feature_cache" not in p.parts}
+                 if p.is_file() and p.name not in {"checksums.json", "development_40.pkl"} and "feature_cache" not in p.parts}
     write_json(out / "checksums.json", checksums)
     print(comparison.to_string())
     print(counts.to_string())

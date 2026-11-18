@@ -1,9 +1,9 @@
 """Development-only generalization diagnostics for the frozen final model."""
 import json
 
+import joblib
 import numpy as np
 import pandas as pd
-from sklearn.base import clone
 
 from models.final_review_tuning import COLUMNS, winners, write_json
 from models.review1_extended_features import LATTICE, TEMPORAL
@@ -12,7 +12,6 @@ from models.schema import FEATURES
 
 
 def analyze(dev, splits, coverage, model, frozen, out, seed):
-    rng = np.random.default_rng(seed)
     candidate_groups = dev.groupby(["trip_id", "gps_index"]).label.agg(["size", "sum"])
     sample = dev[COLUMNS].sample(n=min(50000, len(dev)), random_state=seed)
     correlation = sample.corr()
@@ -26,33 +25,18 @@ def analyze(dev, splits, coverage, model, frozen, out, seed):
     name = selection["model"]
     original = pd.read_json(frozen / f"{name}_development.json", typ="series")
     old_trips = pd.read_csv(frozen / f"{name}_per_trip.csv", dtype={"trip_id": str})
-    train, validation = splits[0]
-    training, held = dev.iloc[train], dev.iloc[validation]
-    order = rng.permutation(training.trip_id.unique())
-    curves = []
-    fitted = None
-    for fraction in [.25, .50, 1.0]:
-        n = max(1, round(len(order) * fraction))
-        subset = training[training.trip_id.isin(order[:n])]
-        fitted = clone(model).fit(subset[COLUMNS], subset.label)
-        curves.append({"training_trips": n,
-                       "train_top1": float(winners(subset, fitted.predict_proba(subset[COLUMNS])[:, 1]).label.mean()),
-                       "validation_top1": float(winners(held, fitted.predict_proba(held[COLUMNS])[:, 1]).label.mean())})
-    pd.DataFrame(curves).to_csv(out / "learning_curve.csv", index=False)
-
+    full_fold = (folds[(folds.model == name) & (folds.fold == 1)].iloc[0].to_dict()
+                 if selection["configuration"] == "tuned" else original["fold_metrics"][0])
+    curves = [{"training_trips": dev.iloc[splits[0][0]].trip_id.nunique(),
+               "train_top1": full_fold["train_top1"],
+               "validation_top1": full_fold["validation_top1"]}]
+    fitted = joblib.load(out / "evaluation_model.pkl")["model"]
+    estimator = fitted.named_steps["model"]
     groups = {"base": FEATURES, **GROUPS, "extended_temporal": TEMPORAL, "lattice": LATTICE}
-    validation_trips = rng.permutation(held.trip_id.unique())[:8]
-    subset = held[held.trip_id.isin(validation_trips)]
-    x = subset[COLUMNS].copy()
-    top = winners(subset, fitted.predict_proba(x)[:, 1]).label.mean()
-    importance = []
-    for key, cols in groups.items():
-        shuffled = x.copy()
-        shuffled.loc[:, cols] = x[cols].to_numpy()[rng.permutation(len(x))]
-        new_score = winners(subset, fitted.predict_proba(shuffled)[:, 1]).label.mean()
-        importance.append(dict(feature_group=key, top1_drop=float(top - new_score)))
-    pd.DataFrame(importance).sort_values("top1_drop", ascending=False).to_csv(
-        out / "feature_group_importance.csv", index=False)
+    importance = [dict(feature_group=key, impurity_importance=float(sum(
+        estimator.feature_importances_[COLUMNS.index(col)] for col in cols)))
+                  for key, cols in groups.items()] if hasattr(estimator, "feature_importances_") else []
+    pd.DataFrame(importance).to_csv(out / "feature_group_importance.csv", index=False)
 
     scores = (per_trip[per_trip.model.eq(name)][["trip_id", "top1", "all_gps_top1", "observations"]]
               if selection["configuration"] == "tuned" else old_trips.rename(
@@ -70,7 +54,7 @@ def analyze(dev, splits, coverage, model, frozen, out, seed):
         baseline_error_slices=pd.read_csv(frozen / "baseline_error_slices.csv").to_dict("records"),
         hardest_trips=scores.nsmallest(8, "top1").to_dict("records"),
         abs_correlation_pairs=pairs_out,
-        validation_feature_group_permutation=importance,
-        permutation_validation_trips=sorted(validation_trips),
-        curve_validation_fold=1, learning_curve=curves)
+        feature_group_impurity_importance=importance,
+        fold_one_train_validation=curves[0],
+        learning_curve_status="Skipped extra subset refits for the final priority change")
     write_json(out / "generalization_report.json", output)

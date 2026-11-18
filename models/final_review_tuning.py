@@ -137,10 +137,11 @@ def main():
     p.add_argument("--jobs", type=int, default=4)
     p.add_argument("--finalize", action="store_true")
     p.add_argument("--diagnostics", action="store_true")
+    p.add_argument("--cache-only", action="store_true")
     p.add_argument("--recover-interrupted", action="store_true",
                    help="Mark RUNNING trials failed after confirming the previous worker stopped")
     args = p.parse_args()
-    if not args.finalize and not args.diagnostics and not args.family:
+    if not args.finalize and not args.diagnostics and not args.cache_only and not args.family:
         p.error("--family or --finalize is required")
     args.out.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((args.frozen / "manifest.json").read_text())
@@ -157,12 +158,18 @@ def main():
     if (len(dev_ids) != 60 or len(held_ids) != 20 or dev_ids & held_ids or set(assignments) != dev_ids
             or sum(map(len, cfg["folds"])) != 60):
         raise ValueError("Invalid frozen trip split")
-    raw = read_training(args.train)
     coverage = pd.read_csv(args.train.with_name("training_coverage.csv"), dtype={"trip_id": str}).set_index("trip_id")
-    if set(raw.trip_id) != dev_ids | held_ids or set(coverage.index) != dev_ids | held_ids:
+    if set(coverage.index) != dev_ids | held_ids:
         raise ValueError("Unexpected trip inventory")
 
+    raw = None
+
     def load(ids):
+        nonlocal raw
+        if raw is None:
+            raw = read_training(args.train)
+            if set(raw.trip_id) != dev_ids | held_ids:
+                raise ValueError("Unexpected training CSV trip inventory")
         items = []
         for trip, labels in raw[raw.trip_id.isin(ids)].groupby("trip_id", sort=False):
             cache = args.frozen / "feature_cache" / f"{trip}.pkl"
@@ -190,7 +197,24 @@ def main():
             model.set_params(model__n_jobs=args.jobs)
         return model.set_params(**{f"model__{k}": v for k, v in params.items()})
 
-    dev = load(dev_ids)
+    cache_path = args.out / "development_40.pkl"
+    cache_key = {"manifest": digest(args.frozen / "manifest.json"),
+                 "training": cfg["training_sha256"], "columns": COLUMNS}
+    cache_metadata = args.out / "development_cache.json"
+    if (cache_path.exists() and cache_metadata.exists()
+            and json.loads(cache_metadata.read_text()) == cache_key):
+        dev = pd.read_pickle(cache_path)
+    else:
+        dev = load(dev_ids)
+        tmp = cache_path.with_suffix(".tmp")
+        dev.to_pickle(tmp)
+        tmp.replace(cache_path)
+        write_json(cache_metadata, cache_key)
+    if set(dev.trip_id) != dev_ids or len(dev) != coverage.loc[sorted(dev_ids)].candidate_rows.sum():
+        raise ValueError("Development cache does not match the frozen inventory")
+    if args.cache_only:
+        print(f"Cached {len(dev):,} labeled development candidates", flush=True)
+        return
     group = dev.trip_id.map(assignments).to_numpy()
     splits = [(np.flatnonzero(group != fold), np.flatnonzero(group == fold)) for fold in range(3)]
     db = args.out / "studies.sqlite3"
@@ -261,6 +285,8 @@ def main():
                            seconds=t.duration.total_seconds() if t.duration else None,
                            parameters=json.dumps(t.user_attrs.get("model_params")),
                            intermediate=json.dumps(t.intermediate_values)) for t in study.trials)
+        if name != "RandomForest":
+            continue
         if not any(t.state == optuna.trial.TrialState.COMPLETE for t in study.trials):
             continue
         complete = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
@@ -304,12 +330,21 @@ def main():
                 raise ValueError(f"Existing artifact does not match the frozen selection: {destination}")
             model, fit_seconds = artifact["model"], artifact["fit_seconds"]
         else:
-            started = time.perf_counter()
-            model = models(name, params).fit(frame[COLUMNS], frame.label)
-            fit_seconds = time.perf_counter() - started
+            reused = (path == "evaluation_model.pkl" and candidate["configuration"] == "untuned"
+                      and name == manifest["frozen_model"])
+            if reused:
+                frozen_model = joblib.load(args.frozen / "review1_model.pkl")
+                if (frozen_model["development_trips"] != sorted(trip_ids)
+                        or frozen_model["feature_columns"] != COLUMNS or frozen_model["variant"] != VARIANT):
+                    raise ValueError("Frozen evaluation model does not match selection")
+                model, fit_seconds = frozen_model["model"], None
+            else:
+                started = time.perf_counter()
+                model = models(name, params).fit(frame[COLUMNS], frame.label)
+                fit_seconds = time.perf_counter() - started
             artifact = dict(model=model, variant=VARIANT, feature_columns=COLUMNS, model_name=name,
                             positive_class=1, training_trips=sorted(trip_ids), training_configuration=cfg,
-                            selection=candidate, fit_seconds=fit_seconds,
+                            selection=candidate, fit_seconds=fit_seconds, reused_frozen_fit=reused,
                             estimator_parameters=model.named_steps["model"].get_params())
             tmp = destination.with_suffix(".tmp")
             joblib.dump(artifact, tmp, compress=3)
