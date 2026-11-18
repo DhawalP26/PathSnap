@@ -265,12 +265,6 @@ PathSnap/
 |-- scripts/
 |   |-- smoke_student_api.py
 |
-|-- tests/
-|
-|-- results/
-|
-|-- reports/
-|
 |-- requirements.txt
 |-- requirements-member1.txt
 |-- requirements_member2.txt
