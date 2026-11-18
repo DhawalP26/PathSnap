@@ -51,3 +51,7 @@ The validation run used 12 of 80 exported training trips and 161,467 candidate r
 ## Review 1 feature experiments
 
 See [the Review 1 report](MEMBER2_REVIEW1_REPORT.md) for the fixed-model comparisons, feature schema, held-out validation, and reproduction command. The frozen candidate scorer is HistGradientBoosting with 26 features.
+
+## Review 1 extended experiments
+
+See the [extended feature report](MEMBER2_REVIEW1_EXTENDED_REPORT.md) for the fixed-model comparison, error audit, and scoring integration. The frozen extended scorer is RandomForest with 40 features.
