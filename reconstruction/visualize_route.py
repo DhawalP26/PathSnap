@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Iterable
 
 from reconstruction.road_graph import RoadGraph
 from reconstruction.route_analysis import read_route, read_track, route_geometry
@@ -15,6 +16,9 @@ def create_trip_map(
     track_path: str | Path,
     route_path: str | Path,
     output_path: str | Path,
+    predicted_arc_ids: Iterable[int] | None = None,
+    predicted_route_segments: Iterable[Iterable[int]] | None = None,
+    predicted_route_name: str = "Predicted route",
 ) -> Path:
     try:
         import folium
@@ -64,6 +68,28 @@ def create_trip_map(
             opacity=0.9,
         ).add_to(route_layer)
     route_layer.add_to(map_view)
+
+    if predicted_arc_ids is not None and predicted_route_segments is not None:
+        raise ValueError("Provide predicted_arc_ids or predicted_route_segments, not both")
+    if not predicted_route_name.strip():
+        raise ValueError("predicted_route_name must not be empty")
+    if predicted_arc_ids is not None or predicted_route_segments is not None:
+        route_segments = (
+            [predicted_arc_ids]
+            if predicted_arc_ids is not None
+            else predicted_route_segments
+        )
+        predicted_layer = folium.FeatureGroup(name=predicted_route_name, show=True)
+        for route_segment in route_segments:
+            for line in route_geometry(graph, route_segment):
+                folium.PolyLine(
+                    [(latitude, longitude) for longitude, latitude in line],
+                    color="#159c68",
+                    weight=6,
+                    opacity=0.9,
+                ).add_to(predicted_layer)
+        predicted_layer.add_to(map_view)
+
     folium.Marker(
         (observations[0][1], observations[0][0]),
         tooltip="Start",
@@ -89,6 +115,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trip-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--predicted-route",
+        type=Path,
+        help="Optional text file containing predicted arc IDs, one per line",
+    )
     args = parser.parse_args()
     trip_id = args.trip_dir.name
     prefix = args.trip_dir / trip_id
@@ -98,6 +129,7 @@ def main() -> None:
         prefix.with_suffix(".track"),
         prefix.with_suffix(".route"),
         args.output,
+        read_route(args.predicted_route) if args.predicted_route else None,
     )
     print(f"Map written to {result}")
 

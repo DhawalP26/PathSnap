@@ -71,10 +71,24 @@ class RoadGraph:
             raise IndexError(f"Unknown arc ID: {arc_id}")
         return self.arcs[arc_id]
 
-    def shortest_path(self, start_node: int, end_node: int) -> tuple[list[int], float]:
-        """Return directed shortest-path arc IDs and distance in meters."""
+    def shortest_path(
+        self,
+        start_node: int,
+        end_node: int,
+        *,
+        max_distance_m: float | None = None,
+    ) -> tuple[list[int], float]:
+        """Return directed shortest-path arc IDs and distance in meters.
+
+        If max_distance_m is supplied, stop once no path within that distance
+        can reach the destination.
+        """
         self._validate_node(start_node)
         self._validate_node(end_node)
+        if max_distance_m is not None and (
+            not math.isfinite(max_distance_m) or max_distance_m < 0
+        ):
+            raise ValueError("max_distance_m must be finite and non-negative")
         if start_node == end_node:
             return [], 0.0
 
@@ -87,10 +101,14 @@ class RoadGraph:
             distance, node_id = heapq.heappop(queue)
             if distance != distances[node_id]:
                 continue
+            if max_distance_m is not None and distance > max_distance_m:
+                break
             if node_id == end_node:
                 break
             for arc in self._outgoing[node_id]:
                 candidate_distance = distance + arc.length_m
+                if max_distance_m is not None and candidate_distance > max_distance_m:
+                    continue
                 if candidate_distance < distances[arc.to_node]:
                     distances[arc.to_node] = candidate_distance
                     previous[arc.to_node] = (node_id, arc.arc_id)
