@@ -43,7 +43,16 @@ def score_review1(prepared, artifact):
     """Score an entire prepared trip with a frozen Review 1 artifact."""
     from models.review1_features import VARIANTS, enrich
 
-    columns = FEATURES + VARIANTS[artifact["variant"]]
+    variant = artifact["variant"]
+    if variant in VARIANTS:
+        features = VARIANTS[variant]
+        builder = enrich
+    else:
+        from models.review1_extended_features import EXTENDED_VARIANTS, extend
+        features = EXTENDED_VARIANTS[variant]
+        builder = extend
+
+    columns = FEATURES + features
     model = artifact["model"]
     if (columns != artifact["feature_columns"] or list(model.feature_names_in_) != columns
             or artifact["positive_class"] != 1 or list(model.classes_) != [0, 1]):
@@ -51,7 +60,7 @@ def score_review1(prepared, artifact):
     result = prepared.features.loc[:, ID_COLUMNS + FEATURES].copy()
     if result.empty:
         return result.assign(score=np.empty(0, dtype=float))
-    frame = enrich(prepared) if artifact["variant"] != "baseline" else prepared.features
+    frame = builder(prepared) if features else prepared.features
     scores = model.predict_proba(frame[columns].replace([np.inf, -np.inf], np.nan))[:, 1]
     if not (np.isfinite(scores) & (scores >= 0) & (scores <= 1)).all():
         raise ValueError("Expected finite candidate scores between zero and one")

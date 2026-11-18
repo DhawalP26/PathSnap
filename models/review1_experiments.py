@@ -13,7 +13,7 @@ from models import train_models as bench
 from models.review1_features import VARIANTS, enrich
 from models.schema import FEATURES, ID_COLUMNS, read_training
 
-def main():
+def main(variants=VARIANTS, feature_builder=enrich):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--baseline", type=Path, required=True)
     p.add_argument("--train", type=Path, required=True)
@@ -29,6 +29,7 @@ def main():
             digest.update(chunk)
     if digest.hexdigest() != config["training_sha256"]:
         raise ValueError("Training CSV differs from baseline")
+    added_columns = list(dict.fromkeys(column for columns in variants.values() for column in columns))
     dev_ids, held_ids = map(set, (reference["development_trips"], reference["holdout_trips"]))
     raw = read_training(args.train)
     coverage = pd.read_csv(args.train.with_name("training_coverage.csv"), dtype={"trip_id": str})
@@ -46,12 +47,12 @@ def main():
                 features = pd.read_pickle(path)
             else:
                 prepared = prepare_trip(str(trip_id), partition="train")
-                features = enrich(prepared)
+                features = feature_builder(prepared)
                 path.parent.mkdir(exist_ok=True)
                 tmp = path.with_suffix(".tmp")
                 features.to_pickle(tmp)
                 tmp.replace(path)
-            merged = labels.merge(features[ID_COLUMNS + VARIANTS["full_context"]],
+            merged = labels.merge(features[ID_COLUMNS + added_columns],
                                   on=ID_COLUMNS, how="left", validate="one_to_one", indicator=True)
             if not merged["_merge"].eq("both").all():
                 raise ValueError(f"Candidate mismatch for {trip_id}")
@@ -103,13 +104,13 @@ def main():
                    "all_development_observations": int(counts.reindex(sorted(dev_ids)).sum())}
     (args.out / "diagnostics.json").write_text(json.dumps(diagnostics, indent=2), encoding="utf-8")
     ablation = []
-    for variant, features in VARIANTS.items():
+    for variant, features in variants.items():
         result, _, _ = evaluate(model_set()["HistGradientBoosting"], dev, splits, FEATURES + features)
         ablation.append(dict(variant=variant, **result))
         pd.DataFrame(ablation).to_csv(args.out / "ablation.csv", index=False)
         print("Ablation", variant, result["top1_accuracy"], flush=True)
     winner = max(ablation, key=lambda r: r["top1_accuracy"])["variant"]
-    columns = FEATURES + VARIANTS[winner]
+    columns = FEATURES + variants[winner]
     (args.out / "selection.json").write_text(json.dumps(
         {"variant": winner, "columns": columns, "selection_metric": "development candidate top-1",
          "ablation_model": "HistGradientBoosting"}, indent=2), encoding="utf-8")
