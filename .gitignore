@@ -7,3 +7,4 @@ results/*.csv
 results/*.json
 results/member2/
 .pytest_cache/
+results/member1/
